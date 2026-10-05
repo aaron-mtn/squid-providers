@@ -68,14 +68,9 @@ class _BlockingOpenAIStream:
         self.closed.set()
 
 
-def _openai_provider(client) -> OpenAICompatibleProvider:
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.temperature = None
-    provider.reasoning_mode = None
-    provider.reasoning_token_budget = None
-    provider.provider_name = "openai_compatible"
-    provider.client = client
-    return provider
+def _openai_provider(client, monkeypatch) -> OpenAICompatibleProvider:
+    monkeypatch.setattr("squid_providers.openai_compatible.OpenAI", lambda **_kwargs: client)
+    return OpenAICompatibleProvider("http://fixture/v1", "test-key")
 
 
 def _chunk(*, content=None, reasoning_content=None):
@@ -83,14 +78,14 @@ def _chunk(*, content=None, reasoning_content=None):
     return SimpleNamespace(id="response", choices=[SimpleNamespace(delta=delta, finish_reason=None)])
 
 
-def test_openai_cancellation_interrupts_wait_for_response_headers() -> None:
+def test_openai_cancellation_interrupts_wait_for_response_headers(monkeypatch) -> None:
     cancelled = threading.Event()
     client = _BlockingOpenAIClient()
     timer = _cancel_soon(cancelled)
     started = time.monotonic()
 
     with pytest.raises(StreamCancelled):
-        _openai_provider(client).stream_chat(
+        _openai_provider(client, monkeypatch).stream_chat(
             "model", [], [], lambda _delta: None, should_cancel=cancelled.is_set
         )
 
@@ -103,6 +98,7 @@ def test_openai_cancellation_interrupts_wait_for_response_headers() -> None:
 @pytest.mark.parametrize("reasoning_only", [False, True], ids=["text-gap", "reasoning-gap"])
 def test_openai_cancellation_interrupts_long_chunk_gap(
     reasoning_only: bool,
+    monkeypatch,
 ) -> None:
     cancelled = threading.Event()
     first = _chunk(
@@ -117,7 +113,7 @@ def test_openai_cancellation_interrupts_long_chunk_gap(
         cancelled.set()
 
     with pytest.raises(StreamCancelled):
-        _openai_provider(client).stream_chat(
+        _openai_provider(client, monkeypatch).stream_chat(
             "model",
             [],
             [],

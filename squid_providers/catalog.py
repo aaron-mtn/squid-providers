@@ -15,7 +15,6 @@ from .ollama import DEFAULT_OLLAMA_BASE_URL, OllamaProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .settings import ProviderSettings
 
-DEFAULT_PROVIDER_ID = "lm_studio"
 CONNECTION_FIELDS = ("base_url", "api_key", "api_key_env")
 
 OPENAI_COMPATIBLE_PROVIDERS = frozenset(
@@ -36,7 +35,7 @@ def build_provider(
         return OllamaProvider(
             base_url=settings.base_url or DEFAULT_OLLAMA_BASE_URL,
             temperature=settings.temperature,
-            request_timeout=getattr(settings, "config", {}).get("request_timeout"),
+            request_timeout=settings.config.get("request_timeout"),
         )
 
     if settings.provider in OPENAI_COMPATIBLE_PROVIDERS:
@@ -49,7 +48,7 @@ def build_provider(
             api_key=settings.api_key,
             temperature=settings.temperature,
             reasoning_mode=settings.reasoning_mode,
-            reasoning_token_budget=getattr(settings, "reasoning_token_budget", None),
+            reasoning_token_budget=settings.reasoning_token_budget,
             provider_name=settings.provider,
         )
 
@@ -155,20 +154,6 @@ def validate_config(provider_id: str, overrides: Mapping[str, Any]) -> dict[str,
     if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (float, int)) or not 0 < timeout < float("inf")):
         raise ValueError(f"providers.{provider_id}.request_timeout must be null or a positive finite number")
     return dict(overrides)
-
-
-def legacy_model_config(provider_id: str, model: Mapping[str, Any]) -> dict[str, Any]:
-    """Interpret the provisional flat format; scoped values remain authoritative."""
-    result = {name: model[name] for name in CONNECTION_FIELDS if name in model}
-    if provider_id == "ollama" and "ollama_request_timeout" in model:
-        result["request_timeout"] = model["ollama_request_timeout"]
-    return result
-
-
-def remove_legacy_model_config(model: dict[str, Any]) -> None:
-    """Remove flat fields after a writer has transferred them to scoped config."""
-    for name in (*CONNECTION_FIELDS, "ollama_request_timeout"):
-        model.pop(name, None)
 
 
 def resolve_config(

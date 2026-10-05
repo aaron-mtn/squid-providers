@@ -1,4 +1,4 @@
-"""Application provider configuration validation."""
+"""Validation of the current provider-owned effective settings contract."""
 
 import pytest
 

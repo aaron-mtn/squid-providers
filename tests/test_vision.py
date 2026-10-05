@@ -14,8 +14,7 @@ from squid_providers.openai_compatible import OpenAICompatibleProvider
 
 
 def test_lm_studio_capability_is_read_from_model_metadata() -> None:
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.provider_name = "lm_studio"
+    provider = OpenAICompatibleProvider("http://fixture/v1", None, provider_name="lm_studio")
     provider._lm_studio_models = lambda: [
         {"key": "vision", "loaded_instances": [], "capabilities": {"vision": True}},
         {"key": "text", "loaded_instances": [], "capabilities": {"vision": False}},
@@ -45,8 +44,7 @@ def test_lm_studio_capability_is_read_from_model_metadata() -> None:
 
 
 def test_generic_openai_provider_fails_closed_for_images() -> None:
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.provider_name = "openai_compatible"
+    provider = OpenAICompatibleProvider("http://fixture/v1", None)
     adapter = ModelAdapter(provider, "unknown", provider_name="openai_compatible")
     adapter.set_asset_loader(lambda _asset_id: b"data")
     message = {

@@ -2,6 +2,7 @@
 
 from squid_core.model_response import ModelResponse, TokenUsage, ToolCall
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -27,6 +28,10 @@ class FakeChat:
 class FakeClient:
     def __init__(self) -> None:
         self.chat = FakeChat()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def provider_with_fake_client(
@@ -35,13 +40,26 @@ def provider_with_fake_client(
     reasoning_token_budget=None,
     provider_name: str = "openai_compatible",
 ) -> tuple[OpenAICompatibleProvider, FakeClient]:
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.temperature = temperature
-    provider.reasoning_mode = reasoning_mode
-    provider.reasoning_token_budget = reasoning_token_budget
-    provider.provider_name = provider_name
-    provider.client = FakeClient()
+    provider = OpenAICompatibleProvider(
+        "http://fixture/v1", uuid.uuid4().hex,
+        temperature=temperature,
+        reasoning_mode=reasoning_mode,
+        reasoning_token_budget=reasoning_token_budget,
+        provider_name=provider_name,
+    )
     return provider, provider.client
+
+
+@pytest.fixture(autouse=True)
+def fake_sdk_clients(monkeypatch):
+    """Mock SDK construction while exercising valid provider initialization."""
+    clients = {}
+
+    def client_for_request(*, base_url, api_key):
+        # Requests for one provider share its controllable fixture response.
+        return clients.setdefault(api_key, FakeClient())
+
+    monkeypatch.setattr("squid_providers.openai_compatible.OpenAI", client_for_request)
 
 
 def test_temperature_none_omits_temperature_from_payload() -> None:
@@ -739,3 +757,57 @@ def test_native_malformed_response_retains_failure_class_and_cause():
         ModelAdapter(provider, "test-model").respond([], [])
     assert model_request_error_details(caught.value)["failure_class"] == "malformed_response"
     assert isinstance(caught.value.__cause__.__cause__, IndexError)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_missing_call_ids_are_unique_across_responses(streaming):
+    provider, client = provider_with_fake_client()
+    if streaming:
+        client.chat.completions.response = [
+            chunk(tool_calls=[
+                tool_call_delta(0, name="read_file", arguments='{}'),
+                tool_call_delta(1, id="provided-id", name="other", arguments='{}'),
+            ], finish_reason="tool_calls"),
+        ]
+        first = provider.stream_chat("model", [], [], lambda _delta: None)
+        second = provider.stream_chat("model", [], [], lambda _delta: None)
+    else:
+        client.chat.completions.response.choices[0].message.tool_calls = [
+            SimpleNamespace(function=SimpleNamespace(name="read_file", arguments='{}')),
+            SimpleNamespace(id="provided-id", function=SimpleNamespace(name="other", arguments='{}')),
+        ]
+        first = provider.create_response("model", [], [])
+        second = provider.create_response("model", [], [])
+    assert first.tool_calls[0].id != second.tool_calls[0].id
+    assert first.tool_calls[0].id.endswith("_0")
+    assert first.tool_calls[1].id == second.tool_calls[1].id == "provided-id"
+
+
+@pytest.mark.parametrize("reported", [False, True])
+def test_streamed_usage_is_best_effort_without_stream_options(reported):
+    provider, client = provider_with_fake_client()
+    terminal = chunk(content="done", finish_reason="stop")
+    if reported:
+        terminal.usage = SimpleNamespace(prompt_tokens=2, completion_tokens=3, total_tokens=5)
+    client.chat.completions.response = [terminal]
+    response = provider.stream_chat("model", [], [], lambda _delta: None)
+    assert response.usage == (TokenUsage(2, 3, 5) if reported else None)
+    assert "stream_options" not in client.chat.completions.payloads[0]
+
+
+def test_stream_owns_a_client_distinct_from_nonstreaming_client(monkeypatch):
+    clients = []
+
+    def make_client(**_kwargs):
+        client = FakeClient()
+        client.chat.completions.response = [chunk(content="done", finish_reason="stop")]
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("squid_providers.openai_compatible.OpenAI", make_client)
+    provider = OpenAICompatibleProvider("http://fixture/v1", "test-key")
+    assert provider.stream_chat("model", [], [], lambda _delta: None).content == "done"
+    assert len(clients) == 2
+    assert clients[0] is provider.client
+    assert clients[0].closed is False
+    assert clients[1].closed is True

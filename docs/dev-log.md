@@ -46,3 +46,58 @@
   deleting those generated artifacts had been rejected by automatic review with
   the reason "blocked by policy". Deferred only commits, remote publication and
   package releases; no architecture or runtime work remains deferred.
+
+- 2026-10-04: Removed behavioral-hook ownership from the mixed image
+  integration test during sibling hook extraction. Kept missing replay asset
+  transport coverage here, moved the TooManyReadsNudge image assertion to Code
+  Squid and deleted the retired repeated-read assertion/import. No provider
+  source, transport behavior or dependencies changed. Documented test ownership.
+  Verification: focused image integration 4 passed; full Providers 139 passed.
+  Cross-repo Core 734 passed, 1 skipped; Code Squid 777 passed. compileall and
+  git diff --check passed. No live inference or deferred implementation work.
+
+- 2026-10-05: Completed the confirmed pre-v0.1 provider cleanup. Native Ollama
+  streaming now appends complete tool calls in arrival order instead of merging
+  chunk-local positions/name/argument fragments. Added multi-chunk, repeated-name,
+  multi-call, supplied-ID and ordering regressions. LM Studio native metadata
+  preserves configured bearer authentication; readiness requires a loaded LLM.
+  Interruptible Ollama HTTP failures retain HTTPStatusError and response metadata
+  for Core classification. Completed/native stream envelopes and message field
+  shapes now raise classifiable validation errors rather than empty successes;
+  tool argument parsing/schema validation remains in Core. Direct timeout
+  construction rejects nonpositive and non-finite values. OpenAI-compatible
+  fallback call IDs have a response-specific prefix in both response paths.
+  Deleted flat-settings migration exports and missing ProviderSettings field
+  fallbacks. Normal provider construction replaces __new__ fixtures, and removed
+  incomplete-instance branches/per-request client ownership compatibility.
+  Code Squid owns default backend selection and consumes only scoped config;
+  related application callers/tests/docs were updated in its sibling repository.
+  Streamed usage remains best-effort: retain supplied counts, allow unknown
+  usage, and do not universally request stream_options or add usage retries.
+  Verification: focused Providers transport/catalog/cancellation 155 passed;
+  full Providers 185 passed. Core adapter tests 63 passed; full Core 809 passed,
+  1 skipped. Affected Code Squid settings/setup/runner/menu/CLI/boundary tests
+  229 passed; full Code Squid 779 passed. Compilation of Providers source/tests,
+  Code Squid source/tests and Core source passed. Constructed all five catalog
+  providers without network requests; application imports, removed exports and
+  shared cancellation identity passed. git diff --check passed in all three
+  repositories. Core files and pre-existing work were left untouched. No live
+  inference or release builds were performed. Ollama /v1 normalization, native
+  reasoning aliases, conservative vision and cancellation design remain.
+  Intentionally deferred broader vision, wrapper deduplication, test relocation,
+  Ollama HTTP consolidation and package/version/license/release work. No further
+  confirmed Fix before packaging issues were found within this patch.
+
+- 2026-10-05: Verified finding #3 against Core's existing
+  model_request_error_details classifier before further production edits. Core
+  already follows explicit causes and unsuppressed contexts. Added 12 urllib
+  HTTPError regressions across real non-streaming/streaming Ollama paths and six
+  HTTP statuses; strengthened the six existing interruptible httpx regressions
+  to classify the RuntimeError itself as well as ModelRequestError. Status,
+  failure class and transient policy survive both chains. urllib body text stays
+  in the safe wrapper message; httpx retains response_body_excerpt and retry_after.
+  No production code or transport behavior changed for this verification.
+  Verification: focused Ollama 88 passed; focused Core classifier/adapter 75
+  passed; full Providers 197 passed; full Core 821 passed, 1 skipped. Compilation
+  and git diff --check passed in both repositories. No live inference. Finding
+  #3 is closed for these wrapping paths; no implementation follow-up deferred.

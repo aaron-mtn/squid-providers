@@ -39,10 +39,11 @@ class OllamaProvider(BaseProvider):
         if (
             isinstance(request_timeout, bool)
             or not isinstance(request_timeout, int | float)
-            or request_timeout <= 0
+            or not 0 < request_timeout < float("inf")
         ):
-            raise ValueError("Ollama request_timeout must be a positive number")
+            raise ValueError("Ollama request_timeout must be a positive finite number")
         self.request_timeout = float(request_timeout)
+        self._image_capability_cache: dict[str, bool] = {}
 
     def supports_streaming(self) -> bool:
         return True
@@ -50,7 +51,7 @@ class OllamaProvider(BaseProvider):
     def supports_image_input(self, model: str) -> bool:
         """Ask Ollama for the selected model's advertised capabilities."""
 
-        cache = getattr(self, "_image_capability_cache", {})
+        cache = self._image_capability_cache
         if model in cache:
             return cache[model]
         body = json.dumps({"model": model, "verbose": False}).encode("utf-8")
@@ -186,6 +187,12 @@ class OllamaProvider(BaseProvider):
                 monitor.raise_if_cancelled()
                 for chunk in stream:
                     monitor.raise_if_cancelled()
+                    if not isinstance(chunk, dict) or "error" in chunk:
+                        raise _ResponseValidationError("Invalid Ollama stream envelope")
+                    # A done-only terminal chunk is valid; an explicitly supplied
+                    # message must still be an object before callbacks inspect it.
+                    if "message" in chunk:
+                        _validate_message_fields(chunk["message"])
                     chunk_elapsed = time.perf_counter() - request_started_at
                     raw_chunk_count += 1
                     if first_raw_chunk_elapsed is None:
@@ -367,10 +374,10 @@ class _OllamaHTTPStream:
             with self._client.stream("POST", self._url, json=self._payload) as response:
                 self._response = response
                 if not response.is_success:
-                    details = response.read().decode("utf-8", errors="replace")
-                    raise RuntimeError(
-                        f"Ollama request failed with HTTP {response.status_code}: {details}"
-                    )
+                    # Read before raising so the retained response exposes its
+                    # body and status to Core's generic failure classifier.
+                    response.read()
+                    response.raise_for_status()
                 for line in response.iter_lines():
                     line = line.strip()
                     if line:
@@ -493,13 +500,21 @@ def _parse_arguments(arguments):
 
 def adapt_response(raw_response: dict) -> ModelResponse:
     """Translate native output, preserving raw arguments for Core validation."""
-    message = raw_response.get("message", {})
+    if not isinstance(raw_response, dict) or "error" in raw_response:
+        raise _ResponseValidationError("Invalid completed Ollama response envelope")
+    message = raw_response.get("message")
+    _validate_message_fields(message)
+    if not any(name in message for name in (
+        "content", "tool_calls", "reasoning", "reasoning_content", "thinking",
+    )):
+        raise _ResponseValidationError("Ollama message must include completed output fields")
+    native_calls = message.get("tool_calls")
     # Ollama may omit call IDs. One prefix per completed response keeps calls
     # readable by index without letting equal indexes in later turns collide.
     fallback_id_prefix = f"ollama_call_{uuid.uuid4().hex}"
     tool_calls = [
         _adapt_tool_call(index, tool_call, fallback_id_prefix)
-        for index, tool_call in enumerate(message.get("tool_calls") or [])
+        for index, tool_call in enumerate(native_calls or [])
     ]
 
     return ModelResponse(
@@ -512,6 +527,28 @@ def adapt_response(raw_response: dict) -> ModelResponse:
         finish_reason=raw_response.get("done_reason"),
         response_id=raw_response.get("id"),
     )
+
+
+def _validate_message_fields(message) -> None:
+    """Check wire structure without interpreting tool names or arguments."""
+    if not isinstance(message, dict):
+        raise _ResponseValidationError("Ollama response must include a message object")
+    if message.get("content") is not None and not isinstance(message["content"], str):
+        raise _ResponseValidationError("Ollama message content must be text or null")
+    for name in ("reasoning", "reasoning_content", "thinking"):
+        if message.get(name) is not None and not isinstance(message[name], str):
+            raise _ResponseValidationError("Ollama message reasoning must be text or null")
+    native_calls = message.get("tool_calls")
+    if native_calls is not None and not isinstance(native_calls, list):
+        raise _ResponseValidationError("Ollama message tool_calls must be a list or null")
+    for call in native_calls or []:
+        if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+            raise _ResponseValidationError("Ollama tool calls must include a function object")
+
+
+class _ResponseValidationError(ValueError):
+    """Native Ollama output cannot satisfy the completed response contract."""
+
 
 def _adapt_tool_call(index: int, tool_call: dict, fallback_id_prefix: str) -> ToolCall:
     function = tool_call.get("function", {})
@@ -563,8 +600,11 @@ def _accumulate_stream_chunk(
         assembled_message["content"] += content_delta
         on_text_delta(content_delta)
 
-    for index, tool_call in enumerate(message.get("tool_calls") or []):
-        _accumulate_tool_call(assembled_message["tool_calls"], index, tool_call)
+    # Native Ollama emits complete calls, not OpenAI-style fragments. A
+    # chunk-local position (or function index) must never merge separate calls.
+    for tool_call in message.get("tool_calls") or []:
+        index = len(assembled_message["tool_calls"])
+        assembled_message["tool_calls"].append(tool_call)
         _notify_tool_preparing(
             assembled_message["tool_calls"],
             index,
@@ -588,45 +628,6 @@ def _accumulate_stream_chunk(
                 assembled[name] = assembled.get(name) or chunk[name]
             else:
                 assembled[name] = chunk[name]
-
-
-def _accumulate_tool_call(tool_calls: list[dict], index: int, tool_call: dict) -> None:
-    while len(tool_calls) <= index:
-        tool_calls.append({"type": "function", "function": {"name": "", "arguments": {}}})
-
-    existing = tool_calls[index]
-    if tool_call.get("id"):
-        existing["id"] = tool_call["id"]
-    if tool_call.get("type"):
-        existing["type"] = tool_call["type"]
-
-    function = tool_call.get("function") or {}
-    existing_function = existing.setdefault("function", {})
-    if function.get("name"):
-        existing_function["name"] = _append_or_set(existing_function.get("name"), function["name"])
-    if "arguments" in function:
-        existing_function["arguments"] = _merge_arguments(
-            existing_function.get("arguments"),
-            function["arguments"],
-        )
-
-
-def _append_or_set(existing, value):
-    if not existing:
-        return value
-    if isinstance(existing, str) and isinstance(value, str) and value not in existing:
-        return f"{existing}{value}"
-    return existing
-
-
-def _merge_arguments(existing, value):
-    if existing in (None, {}, ""):
-        return value
-    if isinstance(existing, dict) and isinstance(value, dict):
-        return {**existing, **value}
-    if isinstance(existing, str) and isinstance(value, str):
-        return f"{existing}{value}"
-    return value
 
 
 def _notify_tool_preparing(

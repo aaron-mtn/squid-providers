@@ -2,7 +2,9 @@
 
 from squid_core.model_response import ModelResponse, TokenUsage, ToolCall
 import json
-from urllib.error import URLError
+from io import BytesIO
+import httpx
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -750,7 +752,7 @@ def test_native_ollama_stream_cancellation_remains_distinct_and_closes() -> None
     ({"prompt_eval_count": 5, "eval_count": 2}, TokenUsage(5, 2, 7)),
 ])
 def test_native_usage_normalization_preserves_missing_counts(counts, expected):
-    assert adapt_response({"message": {}, **counts}).usage == expected
+    assert adapt_response({"message": {"content": ""}, **counts}).usage == expected
 
 
 @pytest.mark.parametrize("aliases, expected", [
@@ -778,3 +780,142 @@ def test_native_stream_normalizes_metadata_and_keeps_malformed_arguments(monkeyp
     assert response.response_id == "stream-id"
     assert response.finish_reason == "stop"
     assert response.tool_calls == [ToolCall("a", "read_file", '{"path":'), ToolCall("b", "read_file", '{}')]
+
+
+@pytest.mark.parametrize("groups", [[1, 1, 1], [2, 1], [3]])
+def test_streamed_complete_calls_preserve_arrival_order_and_ids(groups):
+    native_calls = [
+        {"id": "provided-a", "function": {"index": 0, "name": "read_file", "arguments": {"path": "a"}}},
+        {"function": {"index": 1, "name": "read_file", "arguments": {"path": "b"}}},
+        {"id": "provided-c", "function": {"index": 2, "name": "other_tool", "arguments": {"value": 3}}},
+    ]
+    chunks = []
+    offset = 0
+    for size in groups:
+        chunks.append({"message": {"tool_calls": native_calls[offset:offset + size]}})
+        offset += size
+    chunks.append({"done": True, "done_reason": "stop"})
+    prepared = []
+    response = StreamingOllamaProvider(chunks).stream_chat(
+        "model", [], [], lambda _delta: None, on_tool_preparing=prepared.append,
+    )
+    assert [call.name for call in response.tool_calls] == ["read_file", "read_file", "other_tool"]
+    assert [json.loads(call.arguments) for call in response.tool_calls] == [{"path": "a"}, {"path": "b"}, {"value": 3}]
+    assert response.tool_calls[0].id == "provided-a"
+    assert response.tool_calls[2].id == "provided-c"
+    assert [event["tool_call_index"] for event in prepared] == [0, 1, 2]
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), -float("inf"), float("nan"), True, False])
+def test_direct_timeout_rejects_nonpositive_or_nonfinite_values(value):
+    with pytest.raises(ValueError, match="positive finite"):
+        OllamaProvider(request_timeout=value)
+
+
+@pytest.mark.parametrize("value", [0.1, 1, 45.5])
+def test_direct_timeout_accepts_positive_finite_values(value):
+    assert OllamaProvider(request_timeout=value).request_timeout == float(value)
+
+
+@pytest.mark.parametrize("native", [
+    {}, {"error": "model missing"}, {"message": None}, {"message": []},
+    {"message": "text"}, [], None, {"message": {}},
+    {"message": {"content": []}}, {"message": {"thinking": {}}},
+    {"message": {"tool_calls": {}}},
+    {"message": {"tool_calls": [None]}},
+    {"message": {"tool_calls": [{"function": None}]}},
+])
+def test_malformed_completed_envelopes_are_classified_by_core(native):
+    provider = RespondingOllamaProvider([native])
+    with pytest.raises(ModelRequestError) as caught:
+        ModelAdapter(provider, "model").respond([], [])
+    details = model_request_error_details(caught.value)
+    assert details["failure_class"] == "malformed_response"
+    assert details["_transient"] is False
+    assert type(caught.value.__cause__).__name__ == "_ResponseValidationError"
+
+
+@pytest.mark.parametrize("status, category, transient", [
+    (429, "rate_limit", True), (500, "provider_server_error", True),
+    (503, "provider_server_error", True), (400, "configuration", False),
+    (404, "configuration", False), (401, "authentication", False),
+])
+def test_interruptible_http_errors_preserve_core_classification(monkeypatch, status, category, transient):
+    real_client = httpx.Client
+    transport = httpx.MockTransport(lambda req: httpx.Response(
+        status, json={"error": "fixture error"}, headers={"Retry-After": "7"}, request=req,
+    ))
+    monkeypatch.setattr("squid_providers.ollama.httpx.Client", lambda **kwargs:
+        real_client(transport=transport, **kwargs))
+    adapter = ModelAdapter(OllamaProvider(), "model")
+    with pytest.raises(ModelRequestError) as caught:
+        adapter.respond_streaming([], [], lambda _delta: None, should_cancel=lambda: False)
+    wrapper = caught.value.__cause__
+    assert type(wrapper) is RuntimeError
+    assert isinstance(wrapper.__cause__, httpx.HTTPStatusError)
+    for error in (wrapper, caught.value):
+        details = model_request_error_details(error)
+        assert details["http_status"] == status
+        assert details["failure_class"] == category
+        assert details["_transient"] is transient
+        assert details["retry_after"] == "7"
+        assert "fixture error" in details["response_body_excerpt"]
+    assert model_request_error_details(wrapper)["underlying_error_type"] == "HTTPStatusError"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("status, category, transient", [
+    (429, "rate_limit", True), (500, "provider_server_error", True),
+    (503, "provider_server_error", True), (400, "configuration", False),
+    (404, "configuration", False), (401, "authentication", False),
+])
+def test_urllib_http_errors_preserve_core_classification(
+    monkeypatch, streaming, status, category, transient,
+):
+    original = HTTPError(
+        "http://localhost:11434/api/chat", status, "fixture HTTP error", {},
+        BytesIO(b'{"error":"fixture error"}'),
+    )
+
+    def fail_request(*args, **kwargs):
+        raise original
+
+    monkeypatch.setattr("squid_providers.ollama.request.urlopen", fail_request)
+    adapter = ModelAdapter(OllamaProvider(), "model")
+    with pytest.raises(ModelRequestError) as caught:
+        if streaming:
+            # Omitting should_cancel selects the actual urllib streaming path.
+            adapter.respond_streaming([], [], lambda _delta: None)
+        else:
+            adapter.respond([], [])
+
+    wrapper = caught.value.__cause__
+    assert type(wrapper) is RuntimeError
+    assert wrapper.__cause__ is original
+    # Check the provider wrapper itself as well as Core's additional wrapper.
+    for error in (wrapper, caught.value):
+        details = model_request_error_details(error)
+        assert details["http_status"] == status
+        assert details["failure_class"] == category
+        assert details["_transient"] is transient
+        # urllib's body is consumed by Ollama and retained in the safe message,
+        # rather than exposed as httpx-style response_body_excerpt metadata.
+        assert "fixture error" in details["error_message"]
+        assert "response_body_excerpt" not in details
+    assert model_request_error_details(wrapper)["underlying_error_type"] == "HTTPError"
+    assert [item["error_type"] for item in
+            model_request_error_details(caught.value)["exception_chain"]] == [
+        "RuntimeError", "HTTPError",
+    ]
+
+
+@pytest.mark.parametrize("chunk", [
+    None, [], {"error": "native failure", "done": True}, {"message": None, "done": True},
+    {"message": {"content": []}}, {"message": {"tool_calls": [None]}},
+    {"message": {"tool_calls": [{"function": []}]}},
+])
+def test_malformed_stream_envelopes_do_not_become_empty_success(chunk):
+    provider = StreamingOllamaProvider([chunk])
+    with pytest.raises(ModelRequestError) as caught:
+        ModelAdapter(provider, "model").respond_streaming([], [], lambda _delta: None)
+    assert model_request_error_details(caught.value)["failure_class"] == "malformed_response"

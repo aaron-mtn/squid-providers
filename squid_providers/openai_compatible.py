@@ -3,6 +3,7 @@
 import base64
 import json
 import time
+import uuid
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError, URLError
@@ -35,6 +36,7 @@ class OpenAICompatibleProvider(BaseProvider):
         self.reasoning_mode = reasoning_mode
         self.reasoning_token_budget = reasoning_token_budget
         self.provider_name = provider_name
+        self._image_capability_cache: dict[str, bool] = {}
         # OpenRouter's catalog is public, so discovery may construct this
         # transport without a credential. The inference client stays absent in
         # that case so a catalog request cannot accidentally weaken inference
@@ -53,7 +55,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
         if self.provider_name != "lm_studio":
             return False
-        cache = getattr(self, "_image_capability_cache", {})
+        cache = self._image_capability_cache
         if model in cache:
             return cache[model]
         supported = False
@@ -86,7 +88,10 @@ class OpenAICompatibleProvider(BaseProvider):
                 models = self._lm_studio_models()
                 # A running LM Studio server without a loaded LLM cannot serve
                 # the existing chat-completions inference path.
-                return any(model.get("loaded_instances") for model in models)
+                return any(
+                    model.get("type") == "llm" and model.get("loaded_instances")
+                    for model in models
+                )
             self.list_models()
             return True
         except (OSError, RuntimeError, ValueError, HTTPError, URLError):
@@ -116,7 +121,6 @@ class OpenAICompatibleProvider(BaseProvider):
     def _lm_studio_models(self) -> list[dict]:
         payload = self._get_json(
             self._service_root() + "/api/v1/models",
-            authenticated=False,
         )
         models = payload.get("models") if isinstance(payload, dict) else None
         if not isinstance(models, list):
@@ -178,6 +182,8 @@ class OpenAICompatibleProvider(BaseProvider):
             asset_loader=asset_loader,
         )
         payload["stream"] = True
+        # Usage is best-effort: compatible backends may reject stream_options.
+        # Normalize any supplied counts without universally requesting them.
 
         content_parts = []
         reasoning_parts = {"reasoning": [], "reasoning_content": [], "thinking": []}
@@ -203,18 +209,14 @@ class OpenAICompatibleProvider(BaseProvider):
                 "type": "request_start",
                 "timestamp_unix": time.time(),
                 "monotonic": request_started_at,
-                "provider": getattr(
-                    self,
-                    "provider_name",
-                    "openai_compatible",
-                ),
+                "provider": self.provider_name,
                 "model": model,
-                "base_url": getattr(self, "base_url", None),
+                "base_url": self.base_url,
                 "payload": _redacted_trace_payload(payload),
             },
         )
 
-        client, owns_client = self._streaming_request_client()
+        client = self._streaming_request_client()
         stream = None
 
         def abort_request() -> None:
@@ -256,7 +258,7 @@ class OpenAICompatibleProvider(BaseProvider):
                 close = getattr(stream, "close", None)
                 if callable(close) and not monitor.cancelled:
                     close()
-            if owns_client and not monitor.cancelled:
+            if not monitor.cancelled:
                 client.close()
             self._trace(
                 trace_callback,
@@ -445,9 +447,9 @@ class OpenAICompatibleProvider(BaseProvider):
             payload["parallel_tool_calls"] = False
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        provider_name = getattr(self, "provider_name", "openai_compatible")
-        reasoning_mode = getattr(self, "reasoning_mode", None)
-        reasoning_token_budget = getattr(self, "reasoning_token_budget", None)
+        provider_name = self.provider_name
+        reasoning_mode = self.reasoning_mode
+        reasoning_token_budget = self.reasoning_token_budget
         if provider_name == "openrouter":
             if reasoning_token_budget is not None and reasoning_token_budget > 0:
                 # OpenRouter documents max_tokens and effort as alternatives.
@@ -545,13 +547,15 @@ class OpenAICompatibleProvider(BaseProvider):
         reasoning_parts=None,
     ) -> ModelResponse:
         # Native chunk assembly stays here; Core sees only ordered flat calls.
+        # Missing native IDs still need to identify calls across transcript turns.
+        fallback_id_prefix = f"openai_call_{uuid.uuid4().hex}"
         return ModelResponse(
             content=content,
             reasoning=_normalized_reasoning({
                 name: "".join(parts) for name, parts in (reasoning_parts or {}).items()
             }),
             tool_calls=[ToolCall(
-                id=part["id"] or f"call_{index}",
+                id=part["id"] or f"{fallback_id_prefix}_{index}",
                 name=part["name"],
                 arguments="".join(part["arguments"]),
             ) for index, part in sorted(tool_call_parts.items())],
@@ -568,15 +572,10 @@ class OpenAICompatibleProvider(BaseProvider):
             )
         return self.client
 
-    def _streaming_request_client(self):
+    def _streaming_request_client(self) -> OpenAI:
         """Return an independently closable SDK client for one streamed call."""
-        if not hasattr(self, "_api_key"):
-            # Tests and embedders that inject a duck-typed client retain their
-            # established seam; production instances own per-request clients.
-            return self._inference_client(), False
-        if not self._api_key:
-            return self._inference_client(), False
-        return OpenAI(base_url=self.base_url, api_key=self._api_key), True
+        self._inference_client()
+        return OpenAI(base_url=self.base_url, api_key=self._api_key)
 
 
 def _unique_ids(values) -> list[str]:
@@ -685,6 +684,7 @@ def adapt_response(response) -> ModelResponse:
     try:
         choice = response.choices[0]
         message = choice.message
+        fallback_id_prefix = f"openai_call_{uuid.uuid4().hex}"
         response_id = None
         for name in ("id", "response_id", "request_id", "_request_id"):
             response_id = _value(response, name)
@@ -693,8 +693,11 @@ def adapt_response(response) -> ModelResponse:
         return ModelResponse(
             content=message.content,
             reasoning=_normalized_reasoning(message),
-            tool_calls=[ToolCall(call.id, call.function.name, call.function.arguments)
-                        for call in (_value(message, "tool_calls") or [])],
+            tool_calls=[ToolCall(
+                _value(call, "id") or f"{fallback_id_prefix}_{index}",
+                call.function.name,
+                call.function.arguments,
+            ) for index, call in enumerate(_value(message, "tool_calls") or [])],
             usage=_adapt_usage(_value(response, "usage")),
             finish_reason=_value(choice, "finish_reason"),
             response_id=response_id,

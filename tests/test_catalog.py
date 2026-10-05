@@ -1,7 +1,6 @@
 """Provider catalog, construction, discovery and replay policy regressions."""
 
 import json
-from types import SimpleNamespace
 import pytest
 from squid_providers.catalog import PROVIDER_PROFILES, build_provider, tool_call_content_mode
 from squid_providers.settings import ProviderSettings
@@ -27,7 +26,7 @@ def test_friendly_profiles_map_to_existing_transports() -> None:
     for friendly_name in ("Squid Models", "LM Studio", "OpenRouter", "OpenAI Compatible"):
         profile = profiles[friendly_name]
         provider = build_provider(
-            SimpleNamespace(
+            ProviderSettings(
                 provider=profile.provider_id,
                 model_name="selected-model",
                 base_url=profile.base_url,
@@ -40,7 +39,7 @@ def test_friendly_profiles_map_to_existing_transports() -> None:
         assert provider.provider_name == profile.provider_id
     ollama = profiles["Ollama"]
     provider = build_provider(
-        SimpleNamespace(
+        ProviderSettings(
             provider=ollama.provider_id,
             model_name="selected-model",
             base_url=ollama.base_url,
@@ -110,7 +109,7 @@ def test_ollama_native_discovery(monkeypatch) -> None:
 
 
 def test_openrouter_inference_construction_still_requires_key() -> None:
-    settings = SimpleNamespace(
+    settings = ProviderSettings(
         provider="openrouter",
         model_name="vendor/model",
         base_url="https://openrouter.ai/api/v1",
@@ -286,11 +285,31 @@ def test_invalid_scoped_timeout_is_rejected(value):
         validate_config("ollama", {"request_timeout": value})
 
 
-def test_legacy_timeout_migration_belongs_to_provider_catalog():
-    from squid_providers.catalog import legacy_model_config, remove_legacy_model_config
-    model = {"provider": "ollama", "name": "exact", "ollama_request_timeout": 45,
-             "base_url": "http://localhost:11434"}
-    assert legacy_model_config("ollama", model) == {
-        "request_timeout": 45, "base_url": "http://localhost:11434"}
-    remove_legacy_model_config(model)
-    assert model == {"provider": "ollama", "name": "exact"}
+@pytest.mark.parametrize("api_key", ["configured-token", None])
+def test_lm_studio_metadata_uses_configured_authentication(monkeypatch, api_key):
+    requests = []
+
+    def urlopen(http_request, timeout):
+        requests.append(http_request)
+        return JsonResponse({"models": [{
+            "type": "llm", "key": "vision", "loaded_instances": [{"id": "loaded"}],
+            "capabilities": {"vision": True},
+        }]})
+
+    monkeypatch.setattr("squid_providers.openai_compatible.request.urlopen", urlopen)
+    provider = OpenAICompatibleProvider("http://fixture/v1", api_key, provider_name="lm_studio")
+    assert provider.list_models() == ["vision"]
+    assert provider.is_ready() is True
+    assert provider.supports_image_input("vision") is True
+    assert len(requests) == 3
+    assert all(req.get_header("Authorization") == (
+        f"Bearer {api_key}" if api_key else None
+    ) for req in requests)
+
+
+def test_lm_studio_embedding_only_catalog_is_not_chat_ready(monkeypatch):
+    monkeypatch.setattr("squid_providers.openai_compatible.request.urlopen", lambda *_a, **_k:
+        JsonResponse({"models": [{"type": "embedding", "key": "embed", "loaded_instances": [{}]}]}))
+    provider = OpenAICompatibleProvider("http://fixture/v1", None, provider_name="lm_studio")
+    assert provider.list_models() == []
+    assert provider.is_ready() is False

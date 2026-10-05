@@ -14,9 +14,6 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from squid_core.hooks.redundant_read import RepeatedReadNudge
-from squid_core.hooks.runner import ToolResultContext
-from squid_core.hooks.too_many_reads import TooManyReadsNudge
 from squid_core.model_adapter import ModelAdapter, ModelRequestError
 from squid_core.image_content import VISION_UNAVAILABLE_MESSAGE
 from squid_providers.openai_compatible import (
@@ -97,11 +94,7 @@ class _FakeCompletions:
 
 
 def lm_studio_provider() -> tuple[OpenAICompatibleProvider, _FakeCompletions]:
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.provider_name = "lm_studio"
-    provider.temperature = None
-    provider.reasoning_mode = None
-    provider.reasoning_token_budget = None
+    provider = OpenAICompatibleProvider("http://fixture/v1", None, provider_name="lm_studio")
     provider._image_capability_cache = {"vision-model": True}
     completions = _FakeCompletions()
     provider.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
@@ -245,7 +238,7 @@ def test_provider_failure_after_snapshot_leaves_replayable_asset(tmp_path: Path)
     assert store.load_asset(result["image"]["asset_id"]) == original
 
 
-def test_missing_replay_asset_and_image_hooks_fail_safely(tmp_path: Path) -> None:
+def test_missing_replay_asset_fails_safely(tmp_path: Path) -> None:
     store = SessionStore.create(tmp_path / "sessions", "missing")
     data = image_bytes("PNG")
     asset_id = store.snapshot_asset(data, ".png")
@@ -259,19 +252,3 @@ def test_missing_replay_asset_and_image_hooks_fail_safely(tmp_path: Path) -> Non
     }
     with pytest.raises(ModelRequestError, match="Missing session image asset"):
         adapter.respond([message], [])
-
-    result = {
-        "ok": True,
-        "tool": "read_file",
-        "path": str(tmp_path / "image.png"),
-        "media_type": "image",
-        "image": {},
-    }
-    context = ToolResultContext(
-        session_id="session",
-        repo_root=str(tmp_path),
-        action={"tool": "read_file", "args": {"path": result["path"]}},
-        result=result,
-    )
-    assert RepeatedReadNudge().tool_result(context) is None
-    assert TooManyReadsNudge().tool_result(context) is None
