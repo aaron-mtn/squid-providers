@@ -14,6 +14,7 @@ from squid_core.providers.base import BaseProvider
 from .ollama import DEFAULT_OLLAMA_BASE_URL, OllamaProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .settings import ProviderSettings
+from .discovery import ModelRecord, discover_model_records
 
 CONNECTION_FIELDS = ("base_url", "api_key", "api_key_env")
 
@@ -193,5 +194,5 @@ def provider_ready(settings: ProviderSettings) -> bool:
 
 
 def discover_models(settings: ProviderSettings) -> list[str]:
-    """Discover sorted unique IDs, including credential-free public catalogs."""
-    return sorted(set(build_provider(settings, for_inference=False).list_models()))
+    """Return the normalized inventory's ordered IDs without losing exact case."""
+    return [record.model_id for record in discover_model_records(settings)]

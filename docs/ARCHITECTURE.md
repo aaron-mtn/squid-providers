@@ -8,7 +8,7 @@ retains Core's single exception identity.
 
 Application API in squid_providers.catalog: PROVIDER_PROFILES, PROFILES_BY_ID,
 VALID_PROVIDERS, friendly_provider_name, resolve_provider_name,
-validate_config, resolve_config, build_provider, provider_ready, discover_models,
+validate_config, resolve_config, build_provider, provider_ready, discover_models, discover_model_records, ModelRecord,
 and tool_call_content_mode. ProviderSettings and shared validators live in
 squid_providers.settings. The catalog owns identities/defaults, credential
 variable names, supported scoped config, constructors,
@@ -58,3 +58,21 @@ Streamed usage is best-effort for v0.1: supplied counts are normalized, missing
 counts remain unknown, and transports do not universally request stream_options
 or retry incompatible requests to obtain usage. Cancellation identity and
 transport ownership are unchanged; the two Ollama HTTP implementations remain.
+
+## Normalized model inventory
+
+`catalog.discover_model_records(ProviderSettings, debug_log=...)` returns frozen
+`ModelRecord(model_id, display_name=None, loaded=None)` values from
+`squid_providers/discovery.py`. IDs are opaque and case-sensitive; invalid/blank
+IDs are discarded, exact duplicates merged, and results ordered by
+`(model_id.casefold(), model_id)`. Duplicate load state retains True if exposed
+by any row; loaded-row display names take precedence. Unknown metadata is None.
+`discover_models()` delegates to this inventory and returns the same ordered IDs.
+
+Discovery owns HTTP/authentication, response parsing, metadata and fallbacks:
+Ollama uses native tags, OpenRouter uses its public compatible catalog, and
+LM Studio/generic compatible servers try native LLM metadata before compatible
+models when native discovery fails or yields no usable LLMs. Squid Models uses
+its compatible catalog. Requests have a 10-second bound. Raw transport enumeration
+keeps native ordering and existing readiness semantics. Applications own labels,
+loaded-first grouping, selected IDs, manual-entry fallback and persistence.

@@ -101,3 +101,9 @@
   passed; full Providers 197 passed; full Core 821 passed, 1 skipped. Compilation
   and git diff --check passed in both repositories. No live inference. Finding
   #3 is closed for these wrapping paths; no implementation follow-up deferred.
+
+## 2026-10-05 - Provider-owned model discovery and ordering
+
+- Added discovery.py and catalog ModelRecord/discover_model_records API; simple discover_models delegates. Moved native/compatible endpoints, parsing, fallback, display/load metadata, and normalization from Desktop. Exact IDs remain case-sensitive, duplicates merge useful metadata, and inventories sort by (ID.casefold(), ID). Raw transport order/readiness remains unchanged.
+- Added fake-HTTP coverage for all catalog providers, metadata, fallbacks, empty/malformed responses, exact/case-distinct IDs, deduplication and raw transport order.
+- Verification: full pytest suite 226 passed; compilation/import smoke checks and git diff --check passed. No live inference performed.
