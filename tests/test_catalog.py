@@ -313,3 +313,42 @@ def test_lm_studio_embedding_only_catalog_is_not_chat_ready(monkeypatch):
     provider = OpenAICompatibleProvider("http://fixture/v1", None, provider_name="lm_studio")
     assert provider.list_models() == []
     assert provider.is_ready() is False
+
+
+def test_external_catalog_is_safe_and_separates_provider_identities(monkeypatch):
+    from dataclasses import replace
+    from squid_providers import catalog
+    monkeypatch.setenv("OPENROUTER_API_KEY", "environment-secret")
+    monkeypatch.setattr(catalog, "PROVIDER_PROFILES", tuple(
+        replace(profile, api_key="profile-secret") for profile in catalog.PROVIDER_PROFILES
+    ))
+    records = catalog.provider_catalog()
+    assert {row["id"]: row["label"] for row in records} == {
+        "lm_studio": "LM Studio", "ollama": "Ollama",
+        "openrouter": "OpenRouter", "openai_compatible": "OpenAI Compatible",
+    }
+    assert "secret" not in json.dumps(records)
+    assert all("api_key" not in row["defaults"] for row in records)
+    assert records[1]["connection_fields"] == ["base_url"]
+    assert records[1]["config_fields"] == ["request_timeout"]
+    records[0]["defaults"]["base_url"] = "mutated"
+    assert catalog.provider_catalog()[0]["defaults"]["base_url"] != "mutated"
+
+
+def test_connection_configuration_and_status_are_provider_owned():
+    from squid_providers import catalog
+    router = catalog.normalize_connection_config("openrouter")
+    assert router["api_key_env"] == "OPENROUTER_API_KEY"
+    assert not catalog.configuration_status("openrouter", router, environment={})["configured"]
+    assert catalog.configuration_status("openrouter", router, environment={
+        "OPENROUTER_API_KEY": "secret",
+    }) == {"configured": True, "credentials_configured": True}
+    saved = catalog.normalize_connection_config("openrouter", {"api_key": "secret"}, router)
+    assert catalog.normalize_connection_config("openrouter", {"api_key": ""}, saved) == saved
+    ollama = catalog.normalize_connection_config("ollama", {"api_key": "discard", "api_key_env": "DISCARD"},
+                                                 {"request_timeout": 42})
+    assert ollama["api_key"] == ollama["api_key_env"] == ""
+    assert ollama["request_timeout"] == 42
+    assert catalog.configuration_status("ollama", ollama, environment={})["configured"]
+    assert catalog.normalize_connection_config("lm_studio")["base_url"] == "http://127.0.0.1:1234/v1"
+    assert catalog.normalize_connection_config("openai_compatible")["base_url"] == "http://127.0.0.1:8000/v1"

@@ -75,6 +75,8 @@ class ProviderProfile:
     api_key: str | None = None
     api_key_env: str | None = None
     config_fields: tuple[str, ...] = ()
+    source: str = "Local"
+    credential_fields: bool = True
 
 
 PROVIDER_PROFILES = (
@@ -98,6 +100,7 @@ PROVIDER_PROFILES = (
         "native Ollama chat",
         "http://127.0.0.1:11434",
         config_fields=("request_timeout",),
+        credential_fields=False,
     ),
     ProviderProfile(
         "openrouter",
@@ -105,6 +108,7 @@ PROVIDER_PROFILES = (
         "OpenAI-compatible chat completions",
         "https://openrouter.ai/api/v1",
         api_key_env="OPENROUTER_API_KEY",
+        source="Cloud",
     ),
     ProviderProfile(
         "openai_compatible",
@@ -116,6 +120,81 @@ PROVIDER_PROFILES = (
 )
 PROFILES_BY_ID = {profile.provider_id: profile for profile in PROVIDER_PROFILES}
 VALID_PROVIDERS = frozenset(PROFILES_BY_ID)
+
+
+def provider_catalog() -> list[dict[str, Any]]:
+    """Return fresh, JSON-safe external provider metadata without credentials.
+
+    Profiles remain the single source of defaults and policy. The existing
+    managed transport profile is retained for runtime consumers, but applications
+    compose their managed product entry separately from this external catalog.
+    Never serialize a resolved config here: it can contain environment secrets.
+    """
+    return [
+        {
+            "id": profile.provider_id,
+            "label": profile.friendly_name,
+            "transport": profile.transport,
+            "source": profile.source,
+            "connection_fields": list(CONNECTION_FIELDS if profile.credential_fields else ("base_url",)),
+            "config_fields": list(profile.config_fields),
+            "defaults": {"base_url": profile.base_url, "api_key_env": profile.api_key_env or ""},
+            "credentials_required": profile.credential_fields and not bool(profile.api_key),
+        }
+        for profile in PROVIDER_PROFILES if profile.provider_id != "squid_models"
+    ]
+
+
+def normalize_connection_config(
+    provider_id: str,
+    values: Mapping[str, Any] | None = None,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge connection edits, retaining saved secrets on empty form submissions.
+
+    Credential-free transports discard credential fields. Dummy transport keys
+    are runtime defaults, never UI metadata. Other supported scoped options are
+    preserved so connection edits cannot silently erase backend configuration.
+    """
+    profile = PROFILES_BY_ID[provider_id]
+    result = {"base_url": profile.base_url, "api_key": profile.api_key or "",
+              "api_key_env": profile.api_key_env or ""}
+    result.update(validate_config(provider_id, previous or {}))
+    edits = validate_config(provider_id, values or {})
+    for name, value in edits.items():
+        if name not in CONNECTION_FIELDS:
+            result[name] = value
+    if isinstance(edits.get("base_url"), str) and edits["base_url"].strip():
+        result["base_url"] = edits["base_url"].strip()
+    if edits.get("api_key"):
+        result["api_key"] = edits["api_key"]
+        result["api_key_env"] = ""
+    elif edits.get("api_key_env"):
+        result["api_key_env"] = edits["api_key_env"].strip()
+        result["api_key"] = ""
+    if not profile.credential_fields:
+        result["api_key"] = result["api_key_env"] = ""
+    elif result.get("api_key"):
+        result["api_key_env"] = ""
+    return result
+
+
+def configuration_status(
+    provider_id: str, overrides: Mapping[str, Any], *,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, bool]:
+    """Report configuration availability without probing or returning secrets.
+
+    Configuration is distinct from live readiness; provider_ready owns network
+    checks. Missing credential variables are an ordinary unconfigured state.
+    """
+    profile = PROFILES_BY_ID[provider_id]
+    effective = resolve_config(provider_id, overrides, environment=environment,
+                               require_environment=False)
+    available = bool(effective.get("api_key"))
+    return {"credentials_configured": available,
+            "configured": bool(effective.get("base_url")) and
+                (not profile.credential_fields or available)}
 
 
 def friendly_provider_name(provider_id: str) -> str:
@@ -163,6 +242,7 @@ def resolve_config(
     *,
     environment: Mapping[str, str] | None = None,
     api_key_override: str | None = None,
+    require_environment: bool = True,
 ) -> dict[str, Any]:
     """Apply provider defaults and credential variables to sparse saved overrides.
 
@@ -180,7 +260,7 @@ def resolve_config(
         secret = env.get(variable)
         if secret is not None:
             result["api_key"] = secret
-        elif "api_key_env" in config:
+        elif "api_key_env" in config and require_environment:
             raise ValueError(f"providers.{provider_id}.api_key_env names missing environment variable {variable!r}")
     return result
 

@@ -76,3 +76,24 @@ models when native discovery fails or yields no usable LLMs. Squid Models uses
 its compatible catalog. Requests have a 10-second bound. Raw transport enumeration
 keeps native ordering and existing readiness semantics. Applications own labels,
 loaded-first grouping, selected IDs, manual-entry fallback and persistence.
+
+
+## Application-facing external catalog
+
+`provider_catalog()` projects existing `ProviderProfile` records into fresh
+JSON-safe records: identity/label, transport, source, supported connection and
+backend config fields, non-secret URL/environment-name defaults and whether a
+user credential is required. It never resolves environment variables or returns
+API keys. Managed Squid Models is excluded; applications compose that product
+entry themselves. The pre-existing managed transport profile remains available
+to runtime/CLI consumers to preserve their inference and discovery semantics.
+Providers imports neither Squid Models nor Desktop.
+
+`normalize_connection_config()` merges connection edits with scoped saved config,
+retains secrets on empty form submissions, preserves supported backend options
+and applies credential-field policy. `configuration_status()` reports only boolean
+configuration availability, without network probes. Live readiness stays with
+`provider_ready()`. `resolve_config(require_environment=False)` permits UI and
+preflight checks of a missing credential variable; strict resolution remains the
+default for existing consumers. Desktop delegates to these seams, while Code
+Squid's existing profile consumption remains unchanged.

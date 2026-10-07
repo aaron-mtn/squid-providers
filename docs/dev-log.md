@@ -107,3 +107,11 @@
 - Added discovery.py and catalog ModelRecord/discover_model_records API; simple discover_models delegates. Moved native/compatible endpoints, parsing, fallback, display/load metadata, and normalization from Desktop. Exact IDs remain case-sensitive, duplicates merge useful metadata, and inventories sort by (ID.casefold(), ID). Raw transport order/readiness remains unchanged.
 - Added fake-HTTP coverage for all catalog providers, metadata, fallbacks, empty/malformed responses, exact/case-distinct IDs, deduplication and raw transport order.
 - Verification: full pytest suite 226 passed; compilation/import smoke checks and git diff --check passed. No live inference performed.
+
+
+## 2026-10-06 - Safe external provider catalog for applications
+
+- Added provider_catalog() as a JSON-safe projection of ProviderProfile, with external IDs/labels, transport/source, supported fields, non-secret URL/env-name defaults and credential requirements. Squid Models is excluded from this API; the existing managed transport profile remains unchanged for runtime consumers. No Desktop, Code Squid or Squid Models imports were added.
+- Added provider-owned connection edit normalization and boolean configuration status. Empty form keys preserve saved secrets; credential-free transports clear credential fields; supported scoped backend options survive connection edits. resolve_config() keeps strict missing-variable behavior by default, with an explicit non-strict option for UI/preflight checks. Live readiness, inference and discovery semantics remain unchanged.
+- Updated architecture docs and regressions for identities, separate LM Studio/compatible records, safe metadata, defaults, scoped fields, secret retention and environment-based configuration status. Code Squid profile consumers require no changes.
+- Verification: full Providers suite 228 passed; compilation/import smoke checks and git diff --check passed. Desktop integration: 15 provider regressions and 41 focused route tests passed; all frontend suites passed. Its four full-suite failures also reproduce against untouched Desktop HEAD and concern existing Core/Voice integration issues.
