@@ -77,6 +77,20 @@ its compatible catalog. Requests have a 10-second bound. Raw transport enumerati
 keeps native ordering and existing readiness semantics. Applications own labels,
 loaded-first grouping, selected IDs, manual-entry fallback and persistence.
 
+OpenRouter image capability comes from exact catalog IDs and
+`architecture.input_modalities` containing `image`, never model-name guesses,
+output modalities or a static model allowlist. Both normalized inventory discovery
+and transport `list_models()` retain those facts in a process-local cache owned by
+`discovery.py`, scoped to base URL and expiring after five minutes. A separately
+constructed runtime transport reuses fresh inventory metadata; manual entry or an
+expired cache uses the existing public `/models` request path. `ModelRecord` keeps
+its presentation-neutral inventory shape; applications need no capability wiring.
+Core's ModelAdapter delegates to the transport, and its ToolExecutor passes the
+decision to `read_file` before image bytes are read. Missing/malformed metadata,
+unknown IDs, discovery failures and genuinely text-only models fail closed.
+Ordinary text reads do not query image capabilities. LM Studio, Ollama and generic
+compatible capability behavior is unchanged.
+
 
 ## Application-facing external catalog
 

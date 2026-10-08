@@ -1,5 +1,24 @@
 # Development log
 
+- 2026-10-07: Fixed OpenRouter image capability detection in
+  `squid_providers/openai_compatible.py` and `squid_providers/discovery.py`.
+  The transport previously returned False for every backend except LM Studio;
+  Core correctly propagated that decision to the early image `read_file` gate.
+  Retain exact-ID `architecture.input_modalities` facts from existing catalog
+  responses, sharing them across inventory discovery and runtime transports by
+  base URL for five minutes. Manual entry/expiry uses the existing public catalog
+  path; no model allowlist, guessing, OCR or alternate inference model was added.
+  Added `tests/test_openrouter_vision.py` covering the DeepSeek V4.1 Flash slug,
+  text-only rejection, multimodal PNG request encoding, unchanged text reads,
+  metadata reuse/expiry/endpoint scope and fail-closed malformed/offline catalogs.
+  Updated architecture documentation. Focused discovery/vision/image integration:
+  53 passed before adding an arbitrary-ID regression. Final full Providers suite:
+  246 passed; Core reader/executor checks: 61 passed; Code Squid provider/run checks:
+  39 passed; Desktop bridge/discovery: 14 passed, 1 frozen-backend skip (using the
+  sibling Code Squid checkout on PYTHONPATH for its subprocess). Compilation/import
+  checks and git diff --check passed. Live image inference remains unverified; no paid calls, package
+  installation or downloaded artifacts.
+
 
 - 2026-10-04: Finished the physical repository split and remaining provider
   catalog/config ownership after the earlier staged extraction. Initialized

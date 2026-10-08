@@ -14,6 +14,7 @@ from squid_core.model_response import ModelResponse, TokenUsage, ToolCall
 
 from squid_core.providers.base import BaseProvider, StreamCancelled
 from .cancellation import CancellationMonitor
+from .discovery import cached_openrouter_capabilities, remember_openrouter_capabilities
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -51,8 +52,17 @@ class OpenAICompatibleProvider(BaseProvider):
         return True
 
     def supports_image_input(self, model: str) -> bool:
-        """Use LM Studio's advertised capability and fail closed elsewhere."""
+        """Use provider-advertised image input support; fail closed elsewhere."""
 
+        if self.provider_name == "openrouter":
+            capabilities = cached_openrouter_capabilities(self.base_url)
+            if capabilities is None:
+                # Manual model entry can bypass UI discovery. Reuse the same
+                # public /models path, once per fresh catalog, rather than a
+                # second modality endpoint or model-name heuristics.
+                self.list_models()
+                capabilities = cached_openrouter_capabilities(self.base_url)
+            return capabilities is not None and capabilities.get(model, False)
         if self.provider_name != "lm_studio":
             return False
         cache = self._image_capability_cache
@@ -114,6 +124,8 @@ class OpenAICompatibleProvider(BaseProvider):
         models = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(models, list):
             raise RuntimeError("Model discovery response did not include a model list")
+        if self.provider_name == "openrouter":
+            remember_openrouter_capabilities(self.base_url, models)
         return _unique_ids(
             model.get("id") for model in models if isinstance(model, dict)
         )

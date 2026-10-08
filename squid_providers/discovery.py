@@ -8,6 +8,7 @@ methods retain their native ordering; public inventories are normalized here.
 from dataclasses import dataclass, replace
 import json
 import os
+import time
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -16,6 +17,41 @@ from .ollama import DEFAULT_OLLAMA_BASE_URL
 
 
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
+OPENROUTER_CAPABILITY_TTL_SECONDS = 300
+# Public catalog facts can be shared between UI discovery and a separately
+# constructed inference transport. Scope them to the endpoint, never credentials,
+# and expire them so changing provider metadata does not live forever.
+_openrouter_image_capabilities: dict[str, tuple[float, dict[str, bool]]] = {}
+
+
+def remember_openrouter_capabilities(base_url: str, models: list[dict]) -> None:
+    """Retain authoritative input modalities before inventory drops raw rows."""
+    capabilities = {}
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        architecture = model.get("architecture")
+        modalities = architecture.get("input_modalities") if isinstance(architecture, dict) else None
+        # Output image support, descriptions and model names are not evidence
+        # of image *input*. Unknown or malformed metadata must fail closed.
+        capabilities[model_id] = isinstance(modalities, list) and "image" in modalities
+    _openrouter_image_capabilities[base_url.rstrip("/")] = (time.monotonic(), capabilities)
+
+
+def cached_openrouter_capabilities(base_url: str) -> dict[str, bool] | None:
+    """Return fresh catalog facts, or None when a catalog request is needed."""
+    key = base_url.rstrip("/")
+    cached = _openrouter_image_capabilities.get(key)
+    if cached is None:
+        return None
+    observed_at, capabilities = cached
+    if time.monotonic() - observed_at >= OPENROUTER_CAPABILITY_TTL_SECONDS:
+        _openrouter_image_capabilities.pop(key, None)
+        return None
+    return capabilities.copy()
 
 
 @dataclass(frozen=True)
@@ -146,5 +182,8 @@ def discover_model_records(settings: ProviderSettings, *, debug_log=None) -> lis
             log(f"native_error={exc.__class__.__name__}: {exc}")
     url = _root(settings.base_url) + "/models"
     log(f"fallback_url={url}")
+    models = _rows(_get_json(url, api_key), "data")
+    if provider == "openrouter":
+        remember_openrouter_capabilities(settings.base_url, models)
     return _normalize(ModelRecord(row.get("id"), row.get("name") or row.get("display_name"))
-                      for row in _rows(_get_json(url, api_key), "data"))
+                      for row in models)
