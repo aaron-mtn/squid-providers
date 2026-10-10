@@ -1,0 +1,12 @@
+# Public source distributions contain runtime code and the two public documents.
+include README.md LICENSE
+include docs/ARCHITECTURE.md
+exclude AGENTS.md requirements-dev.txt .gitignore
+exclude docs/dev-log.md
+prune tests
+prune build
+prune dist
+prune .venv
+prune .pytest_cache
+prune .code-squid
+global-exclude __pycache__ *.py[cod] .env .env.*

@@ -17,10 +17,22 @@ transport profile; its default stays in the transport. Add providers explicitly
 here; there is no plugin framework or dynamic entry-point system.
 
 Code Squid -> Core; Code Squid -> Providers -> small Core contracts.
-Each package lives in a sibling Git repository. Source is under the underscore
+Core and Providers are separate Python distributions; Providers depends on
+`squid-core==0.1.0`, `openai` and `httpx`, with Python 3.11 or newer required.
+Sibling checkouts support the editable development requirements but are not a
+runtime requirement. Source is under the underscore
 package, tests under tests/, packaging at the root. No compatibility source
 paths remain. Applications persist sparse supported config dictionaries and
 construct providers before injecting them into Core.
+
+Public documentation consists of README.md and docs/ARCHITECTURE.md. Private
+development history remains local and ignored by Git. Explicit package discovery
+limits the wheel to squid_providers plus distribution metadata and the MIT license.
+MANIFEST.in adds the two public documents to the source distribution and excludes
+tests, agent instructions, development requirements, private logs and local
+artifacts. Tests and development requirements remain in the Git repository for
+contributors. The first GitHub installation supplies both Core and Providers
+sources explicitly rather than assuming the dependency is published on PyPI.
 
 Provider image integration tests cover transport/replay behavior only.
 Behavioral hook checks live in Code Squid alongside its hook implementations;
