@@ -1,65 +1,55 @@
 # Squid Providers
 
-Squid Providers supplies first-party model transports, provider configuration,
-and model discovery for Squid Core. It translates native Ollama and
-OpenAI-compatible chat-completions responses into Core's `ModelResponse`
-contract, including streaming, tool calls, and token usage when available.
-Applications select and configure a provider, then pass the constructed transport
-to Squid Core, which owns the agent runtime and tool execution.
+Squid Providers contains the model integrations used by Squid Core and Code Squid.
+
+It handles connections to model servers and APIs, model discovery, streaming,
+tool calls, token usage, and converting provider responses into the format
+Squid Core expects.
 
 ## Supported providers
 
-| Provider ID | Backend | Default endpoint |
-| --- | --- | --- |
-| `ollama` | Native Ollama chat | `http://127.0.0.1:11434` |
-| `lm_studio` | LM Studio chat completions | `http://127.0.0.1:1234/v1` |
-| `openrouter` | OpenRouter chat completions | `https://openrouter.ai/api/v1` |
-| `openai_compatible` | Other compatible chat-completions servers | `http://127.0.0.1:8000/v1` |
-| `squid_models` | Squid Models managed transport profile | `http://127.0.0.1:8080/v1` |
+| Provider | Default endpoint |
+| --- | --- |
+| Ollama | `http://127.0.0.1:11434` |
+| LM Studio | `http://127.0.0.1:1234/v1` |
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| OpenAI-compatible servers | `http://127.0.0.1:8000/v1` |
 
-Backend/model support for tools, images, and reasoning varies. OpenRouter
-inference requires an API key; its model catalog is public. Local compatible
-profiles supply placeholder keys by default; configure a real key if your server
-requires one. Ollama has no credential fields. The application-facing
-`provider_catalog()` excludes the managed Squid Models entry so applications can
-compose their own product entry.
+The provider IDs used in configuration are `ollama`, `lm_studio`, `openrouter`,
+and `openai_compatible`.
+
+Support for tools, images, reasoning, and other model features depends on the
+provider and model.
+
+OpenRouter requires an API key for inference. Local providers do not require one
+unless the server itself is configured to use authentication.
 
 ## Installation
 
-Python 3.11 or newer is required. Version 0.1.0 depends on `squid-core==0.1.0`,
-`openai`, and `httpx`. This first GitHub release does not assume PyPI availability.
+Squid Providers requires Python 3.11 or newer and depends on Squid Core.
 
-Replace `CORE_OWNER` and `PROVIDERS_OWNER` below with the actual GitHub owners.
-The commands require a `v0.1.0` tag in both repositories; these are release URL
-placeholders until the repositories and tags are available. Git must be installed.
+Install from PyPI:
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install "squid-core @ git+https://github.com/CORE_OWNER/squid-core.git@v0.1.0" "squid-providers @ git+https://github.com/PROVIDERS_OWNER/squid-providers.git@v0.1.0"
+```bash
+pip install squid-providers
 ```
 
-Alternatively, install local checkouts together (the Core checkout must be
-version 0.1.0):
+Squid Core and the required dependencies are installed automatically.
 
-```powershell
-python -m pip install ../squid-core .
-```
-
-This explicit Core source avoids looking up an unpublished dependency on PyPI.
-The sibling layout is a convenience for local development, not a runtime
-requirement. Provider services and models must be set up separately.
+The model server or API you want to use must be set up separately.
 
 ## Usage
 
-With Ollama running and a model already installed, use its exact model ID in
-place of `YOUR_MODEL_ID`:
+This example connects to Ollama and sends a simple request using a model that is
+already installed:
 
 ```python
 from squid_providers.catalog import build_provider, resolve_config
 from squid_providers.settings import ProviderSettings
 
+
 config = resolve_config("ollama", {})
+
 settings = ProviderSettings(
     provider="ollama",
     model_name="YOUR_MODEL_ID",
@@ -67,69 +57,72 @@ settings = ProviderSettings(
     api_key=config["api_key"],
     config=config,
 )
+
 provider = build_provider(settings)
+
 response = provider.create_response(
     model=settings.model_name,
     messages=[{"role": "user", "content": "Say hello in one sentence."}],
     tools=[],
 )
+
 print(response.content)
 ```
 
-`build_provider()` constructs a transport; the response call performs inference.
-Import the public APIs from their concrete modules; the package root does not
-re-export them. Transports also expose `stream_chat()` and implement Core's
-`BaseProvider` contract for injection into a Core runtime.
+`build_provider()` creates the provider connection. Calling
+`create_response()` sends the request to the model.
 
-## Discovery and configuration
+Providers follow Squid Core's provider contract and can be passed directly into
+Squid Core.
 
-`resolve_config(provider_id, overrides)` merges sparse connection overrides with
-provider defaults and resolves credential environment variables. Supported
-connection fields are `base_url`, `api_key`, and `api_key_env`; Ollama additionally
-supports a positive, finite `request_timeout`. OpenRouter defaults to
-`OPENROUTER_API_KEY`. Applications store overrides under `providers.<id>`;
-pass that provider's dictionary to `resolve_config()`. Sampling and reasoning
-controls belong on `ProviderSettings`, rather than in the connection dictionary.
+## Configuration and model discovery
 
-`provider_catalog()` returns non-secret external provider metadata.
-`configuration_status()` checks configuration without network requests;
-`provider_ready(settings)` probes the running service.
-`discover_models(settings)` returns sorted, deduplicated exact model IDs, while
-`discover_model_records(settings)` also returns available display names and load
-state. Discovery uses bounded HTTP requests and provider-specific catalog
-fallbacks; failures can raise errors. Applications own model selection, labels,
-and persistence. Discovery does not perform inference.
+`resolve_config(provider_id, overrides)` combines provider defaults with any
+connection settings you supply.
 
-## Development and tests
+Connection settings can include:
 
-For the supplied editable development setup, clone Squid Core and Squid Providers
-as siblings, create and activate a virtual environment, then run from this repo:
+- `base_url`
+- `api_key`
+- `api_key_env`
+
+Ollama also supports `request_timeout`.
+
+OpenRouter uses `OPENROUTER_API_KEY` by default.
+
+Squid Providers also includes helpers for checking providers and discovering
+available models:
+
+- `provider_catalog()` returns provider information.
+- `configuration_status()` checks whether a provider is configured.
+- `provider_ready(settings)` checks whether the configured service is available.
+- `discover_models(settings)` returns available model IDs.
+- `discover_model_records(settings)` returns additional model information when
+  the provider makes it available.
+
+Applications are responsible for choosing models and storing their own settings.
+
+## Building with Squid Providers
+
+Squid Providers is separate from Squid Core so model integrations do not have to
+be built into the agent itself.
+
+Squid Core handles the agent loop and tool execution. Squid Providers handles
+the connections to the models.
+
+For a deeper look at the package and its public interfaces, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Testing
+
+Run the test suite with:
 
 ```powershell
-python -m pip install -r requirements-dev.txt
 python -m pytest tests
-python -m compileall -q squid_providers
-git diff --check
 ```
 
-Tests use mocked transports and require no live model inference. Run other
-repositories' suites separately to avoid duplicate test module names.
-
-To build and inspect release artifacts:
-
-```powershell
-python -m pip install build
-python -m build
-python -m zipfile -l dist/squid_providers-0.1.0-py3-none-any.whl
-python -m tarfile -l dist/squid_providers-0.1.0.tar.gz
-```
-
-The wheel contains the runtime package, metadata, and license. The source
-distribution also includes README and architecture documentation; tests, private
-development logs, and local build/cache files are excluded.
-See [Architecture](docs/ARCHITECTURE.md) for ownership, public seams, and runtime
-invariants.
+The tests use mocked providers and do not require live model inference.
 
 ## License
 
-MIT, copyright Aaron Slater. See [LICENSE](LICENSE).
+Squid Providers is licensed under the [MIT License](LICENSE).
