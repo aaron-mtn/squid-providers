@@ -463,6 +463,14 @@ class OpenAICompatibleProvider(BaseProvider):
         reasoning_mode = self.reasoning_mode
         reasoning_token_budget = self.reasoning_token_budget
         if provider_name == "openrouter":
+            # Omitted strictness can make upstream OpenAI routes require optional
+            # fields. Default only on the wire; shared definitions and explicitly
+            # configured strictness must survive unchanged across requests.
+            payload["tools"] = [
+                {**tool, "function": {"strict": False, **tool["function"]}}
+                if tool.get("type") == "function" else tool
+                for tool in tools
+            ]
             if reasoning_token_budget is not None and reasoning_token_budget > 0:
                 # OpenRouter documents max_tokens and effort as alternatives.
                 # The explicit budget is more precise, so it wins when set.

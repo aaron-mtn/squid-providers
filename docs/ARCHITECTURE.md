@@ -71,6 +71,13 @@ counts remain unknown, and transports do not universally request stream_options
 or retry incompatible requests to obtain usage. Cancellation identity and
 transport ownership are unchanged; the two Ollama HTTP implementations remain.
 
+OpenRouter Chat Completions defaults function tools to `strict: false` on the
+wire in both streaming and non-streaming requests. Explicit function strictness
+is preserved. The transport copies the function envelope without changing the
+caller-owned schema, required fields, optional arguments, or returned arguments.
+Other tool types and other providers retain their existing definitions. Core
+continues to own argument validation and file-reading behavior.
+
 ## Normalized model inventory
 
 `catalog.discover_model_records(ProviderSettings, debug_log=...)` returns frozen
